@@ -1,0 +1,201 @@
+---
+title: "Exam DUBii 2020 Modules 4&5"
+author: "AnaïsRey"
+date: "22/08/2020"
+output: html_document
+---
+
+
+**Consignes:**
+Présentation (par exemple à l'aide de la commande tree) de l'organisation du repretoire du projet
+Justification des paramètres utilisés
+Analyse succinte des résultats obtenus après chaque outil lancé (figures, tableaux ou texte)
+N'oubliez pas les informations nécessaires à la reproductibilité des analyses !!
+
+
+**NB:**
+
+J'ai décidé de créer une variable path_toProj afin que si une autre personne décide de reprendre cette analyse elle puisse mettre le chemin qu'elle souhaite mais vu que je n'arrive pas à paramétrer le rmarkdown avec les chunks bash je ne pense pas que ce soit très utile.  
+
+J'ai pas trop compris ce que vous demandiez au niveau des analyses succintes des résultats obtenus après chaque outil, par exemple pour moi l'analyse succinte de fastqc est la réponse à la question La qualité des bases vous paraît-elle satisfaisante? Je n'ai pas vraiment compris par ex. comment faire une figure/un tableau des résultats d'une des étapes. Donc je m'excuse par avance mais il n'y a que du texte.
+
+Aussi je load plusieurs fois les mêmes outils dans le rapport ce que je n'aurais pas fait si j'avais fait un script entier de l'analyse mais comme le rapport est sous forme de chunk, j'ai remis le loading des modules au début de chaque analyse.
+
+# Organisation du répértoire projet
+
+```{bash, eval=FALSE}
+# choose you path to the projet directory
+path_toProj=~/Mod4_5_Exam 
+
+# create the directory
+mkdir -p ${path_toProj}
+
+# create the sub-directories which will be needed for the project
+mkdir -p ${path_toProj}/FASTQ
+mkdir -p ${path_toProj}/QC
+mkdir -p ${path_toProj}/CLEANING
+mkdir -p ${path_toProj}/MAPPING
+
+# look at the directory structure
+tree ${path_toProj}
+
+# go inside the directory
+cd ${path_toProj}
+
+```
+
+
+# Téléchargement des données depuis les banques publiques
+
+```{bash, eval=FALSE}
+# Download the fastq files from the the RUN ID SRR10390685 (option -p) in NCBI with sra-tools fasterq-dump
+# We use --threads 4 as fasterq-dump use multi-threading so we can speed up the extraction of FASTQ files
+# We load the needed module
+module load sra-tools
+srun --cpus-per-task 4 fasterq-dump -p SRR10390685 --outdir ${path_toProj}/FASTQ --threads 4
+
+# Download the .gff and .fasta files from the reference genome NC_000964 in NCBI by using wget 
+# We put the .gff and .fasta files into the MAPPING directory 
+srun wget -P ${path_toProj}/MAPPING https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/009/045/GCF_000009045.1_ASM904v1/GCF_000009045.1_ASM904v1_genomic.gff.gz 
+srun wget -P ${path_toProj}/MAPPING https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/009/045/GCF_000009045.1_ASM904v1/GCF_000009045.1_ASM904v1_genomic.fna.gz
+
+# We unzip the files related to the genome (.gff and .fasta) 
+# I know for now I only have those two files in the folder MAPPING so doing *.gz looks fine for me but perhaps it is a "dangerous way"
+srun gunzip ${path_toProj}/MAPPING/*.gz
+```
+
+Analyse succinte du téléchargement: 
+
+```{bash, eval=FALSE}
+# We check the FASTQ files downloaded
+ll ${path_toProj}/FASTQ
+
+# We count the number of reads we have in each FASTQ
+expr $(cat ${path_toProj}/FASTQ/SRR10390685_1.fastq | wc -l) / 4
+expr $(cat ${path_toProj}/FASTQ/SRR10390685_2.fastq | wc -l) / 4
+
+# We look at the lenght of the genome by using the faidx tool of samtools
+# We load the needed module
+module load samtools
+srun samtools faidx ${path_toProj}/MAPPING/GCF_000009045.1_ASM904v1_genomic.fna
+
+# The second column represent the total length of the sequence of the fasta (hence the genome lenght) --> 4215606 bp
+cat ${path_toProj}/MAPPING/GCF_000009045.1_ASM904v1_genomic.fna.fai
+```
+
+On a 7066055 reads dans le read1 et 7066055 reads dans le read2. La longueur du génome de Bacillus subtilis est de 4215606 bp.
+
+# Contrôle qualité des données brutes (reads)
+
+```{bash, eval=FALSE}
+# We use 8 threads to speed up the process of the tool FASTQC used to perfom the quality control of each .fastq file
+# We load the needed module
+module load fastqc
+
+srun --cpus-per-task 8 fastqc ${path_toProj}/FASTQ/SRR10390685_1.fastq -o ${path_toProj}/QC -t 8
+srun --cpus-per-task 8 fastqc ${path_toProj}/FASTQ/SRR10390685_2.fastq -o ${path_toProj}/QC -t 8
+```
+
+
+**La qualité des bases vous paraît-elle satisfaisante ? Pourquoi ?**
+Pour regarder la qualité des bases, j'ai ouvert les 2 fichiers FASTQC Report en html (pour read1 et read2) crées avec FASTQC et j'ai regardé les informations présentes dans les onglets Basics Statistics, Per base sequence quality et Sequence Lenght Distribution. 
+La qualité des bases me paraît très satisfaisante car en moyenne la qualité de chaque base est toujours bonne vu que le "phred quality" moyen (ligne bleue) est toujours au dessus de 30  pour chacun des reads paired-end. Vers la fin du read, on voit que la qualité diminue (et c'est plus marqué pour le read 2, ce qui est normal avec le séquençage ILLUMINA il me semble donc ce n'est pas un soucis) mais cela n'empêche pas que la qualité est suffisante pour pouvoir suivre le reste des analyses. Aussi on voit que la plupart des reads ont une longeur supérieure à 130bp environs.
+
+
+**Quelle est la profondeur de séquençage (calculée par rapport à la taille du génome de référence) ?**
+
+J'a iutilisé les élements suivants pour le calcul de la profondeur de séquençage:
+- n= Nombre de reads dans le read1 + Nombre de reads dans le read2
+- l= size of the fragment (vu que dans la majorité des cas les reads vont jusqu'à 151bp, j'ai pris ce chiffre mais du coup j'imagine que je surévalue un peu mais je pense que c'est négligeable)
+- g= genome size
+
+La profondeur de séquence calculée comme cela n * l / g est donc de : (7066055+7066055) * 151 / 4215606 = 506X
+
+Je ne suis pas sure à 100% qu'avoir doublé le nombre de reads vu qu'on est en paired-end soit correcte car je n'ai pas évalué l'overlap entre le read1 et le read2. 
+
+# Nettoyage des reads
+
+```{bash, eval=FALSE}
+# To clean reads, we use the tool fastp on our paired-end fastq files and we use the following parameters:
+# -l 130 to keep only reads that have a lenght >= to 130bp (we have seen in the fastqc report that most of the reads have a lenght superior to 130bp) so we remove potential short reads which could be sequencing and/or pcr errors. 
+# --in1, --in2, --out1, --out2 are respectively input and output fastq files for paired end inpout/output
+# -t 8 threads to speed up the process
+# -h to save the report in html
+# -q 20 to keep only base with phred quality >= 20
+# The adapter trimming is enabled by default and the man help said that the method used to look for adpaters in Paired End Data is robust enough to not need the adapter sequence so I decided to let it as it is.
+
+# We load the needed module
+module load fastp
+
+srun --cpus-per-task 8 fastp \
+--in1 ${path_toProj}/FASTQ/SRR10390685_1.fastq --in2 ${path_toProj}/FASTQ/SRR10390685_2.fastq \
+-l 130 \
+-q 20 \
+--out1 ${path_toProj}/CLEANING/SRR10390685_1.cleaned_filtered.fastq --out2 ${path_toProj}/CLEANING/SRR10390685_2.cleaned_filtered.fastq \
+-h ${path_toProj}/CLEANING/fastp.html -t 8
+```
+
+**Quel pourcentage de reads sont filtrés et pourquoi ?**
+
+Après être allée voir le fastp report html, je constate que 13404542 reads (soit 6702271 pour read1 et 6702271 pour read2) sont gardés sur les 14132110 reads de départ présents. Cela fait donc un % de reads gardé de 94.8%. Sur les 5.2 % filtrés, il y a 356126 reads qui n'ont pas passé le filtre de phred quality (base <20), 367404 reads qui n'ont pas passé le filtre de taille (130bp) et 4038 reads qui avaient trop de N bases.
+
+
+# Alignement des reads contre le génome de reférence
+
+```{bash, eval=FALSE}
+# We load the needed modules
+module load bwa
+module load samtools
+
+# We index the reference genome with the tool bwa_index
+srun bwa index ${path_toProj}/MAPPING/GCF_000009045.1_ASM904v1_genomic.fna
+
+# Second, we map our paired-end cleaned and filtered reads with bwa mem by multithreading and we convert the sam file into a bam file with samtools view and the options -h (include the header in the output) and -b (Output in the BAM format). We convert into a binary file because it takes less space.
+srun --cpus-per-task=14 bwa mem ${path_toProj}/MAPPING/GCF_000009045.1_ASM904v1_genomic.fna ${path_toProj}/CLEANING/SRR10390685_1.cleaned_filtered.fastq ${path_toProj}/CLEANING/SRR10390685_2.cleaned_filtered.fastq -t 13 | samtools view -hb > ${path_toProj}/MAPPING/SRR10390685.bam
+
+# To look at the number of paired and aligned reads, we use the samtools view with the -f (flag)  option 0x2 in order to keep only the reads mapped in proper pair in the .sam file and we keep only the first column with cut to keep only the name of the aligned reads, we sort those name and keep only them one time (unique option -u) and we count the rows to have the number of paired and aligned reads
+srun samtools view -f 0x2 ${path_toProj}/MAPPING/SRR10390685.bam | cut -f1 | sort -u | wc -l
+
+# Another option is to use the flagstat tool of samtools and look at the row 'properly paired'
+srun samtools flagstat  ${path_toProj}/MAPPING/SRR10390685.bam
+
+```
+
+
+**Quel est le % de reads pairés alignés ?**
+On a vu que le nombre de reads pairés alignés étaient de 6299240 sur les 6702271 reads filtrés après fastp, ce qui fait un total 93.99 % de reads pairés alignés, ce qui correspondont aussi au % observé dans le fichier de sortie de samtools flagstat à la ligne "properly paired" ("12598480 + 0 properly paired (93.99% : N/A)"). 6299240*2=12598480 reads, donc si j'ai bien compris la seule différence ici c'est que le flagstat donne le nombre de reads sommé des read1 et read2 alors qu'avec la commande faîte au dessus récupérant dans le fichier .bam on a le nombre de reads "mergés" et alignés.
+
+# Extraire dans un fichier BAM les reads chevauchant à au moins 50% le gène trmNF
+
+```{bash, eval=FALSE}
+# We create a new .gff file containing only the row of the target gene by searching its name with grep 
+srun grep ";Name=trmNF" ${path_toProj}/MAPPING/GCF_000009045.1_ASM904v1_genomic.gff > ${path_toProj}/MAPPING/trmNF.gff
+
+# We load the needed module
+module load bedtools
+
+# We use the intersect function of bedtools to look for reads for which at least 50% of their length aligned on the gene trmNF. 
+# We use the -f option to define the minimum overlap (in our case 50%) we want to have as a fraction of A 
+srun bedtools intersect -b ${path_toProj}/MAPPING/trmNF.gff -a ${path_toProj}/MAPPING/SRR10390685.bam -f 0.50 > ${path_toProj}/MAPPING/trmNF_50overlap.bam
+
+```
+
+Analyse succinte du l'extraction du fichier BAM des reads chevauchant à au moins 50% du gène trmNF:
+
+```{bash, eval=FALSE}
+# We load the needed module
+module load samtools
+
+# we look at the number of paired and aligned reads on the region of the gene trnmNF (options of the line of this command are already explained below)
+srun samtools view -f 0x2 ${path_toProj}/MAPPING/trmNF_50overlap.bam | cut -f1 | sort -u | wc -l
+
+# We look at where the mapping starts to see if it matches with the position of the gene trmNF on the genome
+# cut -f4 is used to select only the column indicating the 5' position of the alignment and sort is to sort the positions and head is to have the first position and tail the last position
+srun samtools view -f 0x2 ${path_toProj}/MAPPING/trmNF_50overlap.bam | cut -f4 | sort | head
+srun samtools view -f 0x2 ${path_toProj}/MAPPING/trmNF_50overlap.bam | cut -f4 | sort | tail
+# We look at the position of the gene trnmNF by looking at the 4 and 5 columns of the .gff file
+cat ${path_toProj}/MAPPING/trmNF.gff
+```
+
+
+On voit qu'on a 1672 de reads pairés alignés qui chevauchent au moins sur 50% de leur longeur sur une partie du gène trmNF. Aussi on voit que les alignements de ces reads sont dans la région du gène trmNG car les alignements commencent entre 42846 et 43590 bp ce qui correspond assez bien à la position du gène trmNF sur le génome (42917-43660)
